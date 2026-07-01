@@ -1,18 +1,49 @@
-# Python-generated files
+# Byte-compiled / optimized files
 __pycache__/
 *.py[oc]
+*.so
+
+# Packaging / build artifacts
 build/
 dist/
 wheels/
-*.egg-info
+*.egg
+*.egg-info/
+.eggs/
 
 # Virtual environments
-.venv
+.venv/
+venv/
+env/
 
 # Tooling caches
 .tox/
+.nox/
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
+.cache/
+.hypothesis/
+
+# Test / coverage reports
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+junit*.xml
 
 # hatch-vcs generated version file (derived from git tags)
 src/opentelemetry/instrumentation/sanic/_version.py
+
+# Environment / secrets
+.env
+.env.*
+
+# Editors / IDEs
+.idea/
+.vscode/
+*.swp
+
+# OS cruft
+.DS_Store
+Thumbs.db
