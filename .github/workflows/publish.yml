@@ -1,0 +1,61 @@
+name: Publish to PyPI
+
+# Publishes whenever a version tag is pushed (e.g. `v0.1.0`). hatch-vcs turns
+# that tag into the package version, so the tag is the single source of truth.
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history + tags are required for hatch-vcs versioning.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Check metadata
+        run: |
+          python -m pip install --upgrade twine
+          twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # Trusted Publishing (OIDC): no API token/secret required. Configure a
+    # matching publisher for this repo/workflow on PyPI, and (recommended) a
+    # GitHub environment named "pypi" with protection rules.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/opentelemetry-instrumentation-sanic
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@release/v1
