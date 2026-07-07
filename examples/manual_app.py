@@ -1,6 +1,7 @@
-"""Example: enabling Sanic tracing programmatically.
+"""Example: enabling Sanic tracing and metrics programmatically.
 
-Run this file directly to see spans printed to the console::
+Run this file directly to see spans (and, every few seconds, metrics) printed
+to the console::
 
     python examples/manual_app.py
 
@@ -11,29 +12,47 @@ Then, in another terminal::
 For fully **zero-code** usage you would instead skip the ``instrument()`` call
 below and launch with::
 
-    opentelemetry-instrument --traces_exporter console python examples/manual_app.py
+    opentelemetry-instrument \
+        --traces_exporter console \
+        --metrics_exporter console \
+        python examples/manual_app.py
 """
 
 from __future__ import annotations
 
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import (
+    ConsoleMetricExporter,
+    PeriodicExportingMetricReader,
+)
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import ConsoleSpanExporter, SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import (
+    ConsoleSpanExporter,
+    SimpleSpanProcessor,
+)
 
-from opentelemetry import trace
+from opentelemetry import metrics, trace
 from opentelemetry.instrumentation.sanic import SanicInstrumentor
 
 # 1. Configure a tracer provider that prints spans to stdout.
-provider = TracerProvider()
-provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
-trace.set_tracer_provider(provider)
+tracer_provider = TracerProvider()
+tracer_provider.add_span_processor(SimpleSpanProcessor(ConsoleSpanExporter()))
+trace.set_tracer_provider(tracer_provider)
 
-# 2. Instrument BEFORE the Sanic application is created. Skip the /health probe.
+# 2. Configure a meter provider that periodically prints metrics to stdout.
+meter_provider = MeterProvider(
+    metric_readers=[PeriodicExportingMetricReader(ConsoleMetricExporter())]
+)
+metrics.set_meter_provider(meter_provider)
+
+# 3. Instrument BEFORE the Sanic application is created. Skip the /health probe.
 SanicInstrumentor().instrument(
-    tracer_provider=provider,
+    tracer_provider=tracer_provider,
+    meter_provider=meter_provider,
     excluded_urls="/health",
 )
 
-# 3. Build the app exactly as you normally would — no tracing code required.
+# 4. Build the app exactly as you normally would — no telemetry code required.
 from sanic import Sanic  # noqa: E402 - imported after instrument() on purpose
 from sanic.response import json as json_response  # noqa: E402
 

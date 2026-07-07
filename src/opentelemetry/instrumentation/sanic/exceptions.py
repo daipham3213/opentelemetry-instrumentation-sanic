@@ -1,11 +1,25 @@
 """Custom exception hierarchy for the Sanic instrumentation package.
 
-Defining a dedicated hierarchy lets callers catch instrumentation-specific
-failures without swallowing unrelated errors, and keeps the ``except`` clauses
-throughout the package narrow and intentional.
+A dedicated hierarchy lets callers catch instrumentation-specific failures
+without swallowing unrelated errors, and keeps every ``except`` clause in the
+package narrow and intentional.
+
+The hierarchy is::
+
+    SanicInstrumentationError                 (base)
+    ├── SanicConfigurationError               invalid configuration
+    ├── MiddlewareRegistrationError           middleware could not be attached
+    └── RequestAttributeError                 object is not a Sanic request
 """
 
 from __future__ import annotations
+
+__all__ = [
+    "MiddlewareRegistrationError",
+    "RequestAttributeError",
+    "SanicConfigurationError",
+    "SanicInstrumentationError",
+]
 
 
 class SanicInstrumentationError(Exception):
@@ -13,6 +27,15 @@ class SanicInstrumentationError(Exception):
 
     Catch this to handle *any* failure originating from the Sanic
     instrumentation while leaving unrelated exceptions to propagate.
+    """
+
+
+class SanicConfigurationError(SanicInstrumentationError):
+    """Raised when the instrumentation is given invalid configuration.
+
+    For example, an ``excluded_urls`` value that is not valid
+    regular-expression syntax. Distinct from :class:`RequestAttributeError`,
+    which concerns runtime request objects rather than static configuration.
     """
 
 
@@ -25,15 +48,8 @@ class MiddlewareRegistrationError(SanicInstrumentationError):
 
 
 class RequestAttributeError(SanicInstrumentationError):
-    """Raised when span attributes cannot be derived from a request object.
+    """Raised when telemetry cannot be derived from a request object.
 
     Signals that the incoming object does not expose the Sanic request
-    interface this package relies on.
+    interface this package relies on (in practice, that it has no ``method``).
     """
-
-
-__all__ = [
-    "MiddlewareRegistrationError",
-    "RequestAttributeError",
-    "SanicInstrumentationError",
-]

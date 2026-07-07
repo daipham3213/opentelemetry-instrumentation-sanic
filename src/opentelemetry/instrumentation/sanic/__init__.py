@@ -2,8 +2,9 @@
 
 This package exposes :class:`SanicInstrumentor`, a
 :class:`~opentelemetry.instrumentation.instrumentor.BaseInstrumentor` that
-transparently traces every inbound request handled by Sanic — including apps
-served over ASGI.
+transparently instruments every inbound request handled by Sanic — including
+apps served over ASGI — emitting both a server span and the standard HTTP
+server metrics.
 
 It is wired to the ``opentelemetry_instrumentor`` entry-point group, so once
 installed it is discovered and activated automatically by the
@@ -22,155 +23,41 @@ Equivalently, it can be enabled programmatically:
     SanicInstrumentor().instrument()  # do this *before* creating your app
     app = Sanic("my-app")
 
-How it works
+Architecture
 ------------
-Instead of patching version-sensitive internals such as ``handle_request``,
-the instrumentor wraps :meth:`sanic.Sanic.__init__` so that every application
-attaches OpenTelemetry request/response middleware as it is constructed.
-Middleware signatures are stable across Sanic releases, which keeps the
-integration loosely coupled to Sanic's internals.
+Responsibilities are split across small, single-purpose modules:
 
-The constructor is patched *in place* rather than swapping in a subclass:
-Sanic's ``TouchUp`` metaclass rewrites method bodies keyed on the concrete
-application class, so preserving the original class identity is what keeps the
-framework working. Because instrumentation happens at *construction* time,
-``instrument()`` must run before your application object is created — exactly
-what the ``opentelemetry-instrument`` launcher guarantees.
+* ``exceptions`` — the package's custom exception hierarchy;
+* ``_request`` — an anti-corruption layer isolating all access to Sanic's
+  duck-typed request/response objects;
+* ``_span_attributes`` / ``_metric_attributes`` — pure attribute assembly for
+  each signal;
+* ``_span`` (:class:`SpanRecorder`) / ``_metrics`` (:class:`MetricsRecorder`) —
+  the two symmetric signal recorders;
+* ``_middleware`` — the thin orchestrator wiring both recorders into the
+  request lifecycle;
+* ``_url_filter`` — standard-library URL exclusion;
+* ``_instrumentor`` — activation via the ``Sanic.__init__`` patch.
+
+Only the names re-exported below are considered public API.
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Callable, Collection
-from functools import wraps
-from typing import Any
-
-from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
-from opentelemetry.trace import get_tracer
-
-from ._middleware import SanicOpenTelemetryMiddleware
-from ._url_filter import ExcludeUrlsInput
+from ._instrumentor import SanicInstrumentor
 from .exceptions import (
     MiddlewareRegistrationError,
     RequestAttributeError,
+    SanicConfigurationError,
     SanicInstrumentationError,
 )
-from .package import _instruments
 from .version import __version__
 
 __all__ = [
     "MiddlewareRegistrationError",
     "RequestAttributeError",
+    "SanicConfigurationError",
     "SanicInstrumentationError",
     "SanicInstrumentor",
     "__version__",
 ]
-
-_logger = logging.getLogger(__name__)
-
-# Marks a patched ``__init__`` so instrumentation is idempotent and reversible.
-_OTEL_PATCH_FLAG = "_otel_instrumented"
-
-
-def _build_instrumented_init(
-    original_init: Callable[..., None],
-    middleware: SanicOpenTelemetryMiddleware,
-) -> Callable[..., None]:
-    """Wrap ``Sanic.__init__`` to attach middleware after normal construction.
-
-    :param original_init: The unpatched ``Sanic.__init__``.
-    :param middleware: The middleware instance to attach to each new app.
-    :returns: A drop-in replacement constructor.
-    """
-
-    @wraps(original_init)
-    def instrumented_init(self: Any, *args: Any, **kwargs: Any) -> None:
-        original_init(self, *args, **kwargs)
-        try:
-            middleware.attach(self)
-        except MiddlewareRegistrationError:
-            _logger.exception(
-                "Could not attach OpenTelemetry middleware to Sanic app; "
-                "requests from this app will not be traced."
-            )
-
-    setattr(instrumented_init, _OTEL_PATCH_FLAG, True)
-    return instrumented_init
-
-
-class SanicInstrumentor(BaseInstrumentor):
-    """Instruments the Sanic framework to emit OpenTelemetry server spans.
-
-    Use it like any other OpenTelemetry instrumentor::
-
-        SanicInstrumentor().instrument(
-            tracer_provider=my_provider,
-            excluded_urls="/health,/metrics",
-        )
-        ...
-        SanicInstrumentor().uninstrument()
-
-    :keyword tracer_provider: An optional
-        :class:`~opentelemetry.trace.TracerProvider`; the global provider is
-        used when omitted.
-    :keyword excluded_urls: Optional comma-separated string or iterable of
-        regular-expression patterns; matching request URLs are not traced.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._original_init: Callable[..., None] | None = None
-
-    def instrumentation_dependencies(self) -> Collection[str]:
-        """Return the Sanic version specifiers this instrumentor supports.
-
-        :returns: The :data:`~opentelemetry.instrumentation.sanic.package._instruments`
-            tuple, checked by the base class before instrumenting.
-        """
-        return _instruments
-
-    def _instrument(self, **kwargs: Any) -> None:
-        """Activate instrumentation by wrapping :meth:`sanic.Sanic.__init__`.
-
-        :keyword tracer_provider: Optional tracer provider (see class docstring).
-        :keyword excluded_urls: Optional URL exclusion patterns.
-        :raises SanicInstrumentationError: If Sanic cannot be imported.
-        """
-        try:
-            import sanic
-        except ImportError as exc:  # pragma: no cover - dependency guard
-            raise SanicInstrumentationError(
-                "Sanic is not installed; cannot instrument it."
-            ) from exc
-
-        if getattr(sanic.Sanic.__init__, _OTEL_PATCH_FLAG, False):
-            # Already patched by another instance; keep the first patch.
-            return
-
-        tracer = get_tracer(
-            __name__,
-            __version__,
-            tracer_provider=kwargs.get("tracer_provider"),
-        )
-        excluded_urls: ExcludeUrlsInput = kwargs.get("excluded_urls")
-        middleware = SanicOpenTelemetryMiddleware(tracer, excluded_urls)
-
-        self._original_init = sanic.Sanic.__init__
-        sanic.Sanic.__init__ = _build_instrumented_init(self._original_init, middleware)
-
-    def _uninstrument(self, **kwargs: Any) -> None:
-        """Restore the original :meth:`sanic.Sanic.__init__`.
-
-        Applications created while instrumentation was active keep their
-        middleware; only newly constructed apps are affected by removal.
-        """
-        if self._original_init is None:
-            return
-        try:
-            import sanic
-
-            sanic.Sanic.__init__ = self._original_init
-        except ImportError:  # pragma: no cover - dependency guard
-            _logger.debug("Sanic not importable during uninstrument; skipping.")
-        finally:
-            self._original_init = None
