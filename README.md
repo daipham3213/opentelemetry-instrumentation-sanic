@@ -81,7 +81,10 @@ The instrumentor patches `sanic.Sanic.__init__` in place so each app registers
 request/response middleware as it is constructed. (Patching in place rather
 than swapping in a subclass preserves the class identity that Sanic's `TouchUp`
 metaclass keys on.) Middleware signatures are stable across Sanic releases, so
-the integration stays decoupled from Sanic internals. Responsibilities are split across small modules: URL filtering
-(`_url_filter`), attribute extraction (`_attributes`), the metric instruments
-(`_metrics`), the request lifecycle that emits both signals (`_middleware`),
-and activation (`__init__`).
+the integration stays decoupled from Sanic internals. Responsibilities are
+split across small, single-purpose modules: an anti-corruption layer over
+Sanic's request/response objects (`_request`), pure per-signal attribute
+assembly (`_span_attributes`, `_metric_attributes`), two symmetric signal
+recorders (`_span`, `_metrics`), the thin lifecycle orchestrator that drives
+both (`_middleware`), URL filtering (`_url_filter`), the exception hierarchy
+(`exceptions`), and activation (`_instrumentor`, re-exported from `__init__`).

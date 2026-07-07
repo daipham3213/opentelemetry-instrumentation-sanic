@@ -11,12 +11,16 @@ import re
 from collections.abc import Iterable
 from typing import TypeAlias
 
+from .exceptions import SanicConfigurationError
+
 #: Accepted input forms for building an :class:`ExcludeUrlFilter`.
 ExcludeUrlsInput: TypeAlias = str | Iterable[str] | None
 
+__all__ = ["ExcludeUrlFilter", "ExcludeUrlsInput"]
+
 
 class ExcludeUrlFilter:
-    """Decides whether a URL should be excluded from tracing.
+    """Decides whether a URL should be excluded from instrumentation.
 
     Patterns are treated as regular expressions and combined into a single
     alternation, so a match anywhere in the URL excludes it. An empty filter
@@ -25,8 +29,8 @@ class ExcludeUrlFilter:
     :param patterns: A comma-separated string (e.g. ``"/health,/metrics"``) or
         an iterable of regular-expression fragments. ``None`` yields a filter
         that excludes nothing.
-    :raises RequestAttributeError: If a pattern is not valid regular-expression
-        syntax.
+    :raises SanicConfigurationError: If a pattern is not valid
+        regular-expression syntax.
     """
 
     __slots__ = ("_regex",)
@@ -39,10 +43,7 @@ class ExcludeUrlFilter:
         try:
             self._regex = re.compile("|".join(f"(?:{p})" for p in fragments))
         except re.error as exc:  # narrow: only invalid regex syntax
-            # Imported lazily to avoid a circular import at module load time.
-            from .exceptions import RequestAttributeError
-
-            raise RequestAttributeError(
+            raise SanicConfigurationError(
                 f"Invalid excluded-URL pattern(s): {patterns!r}"
             ) from exc
 
@@ -52,18 +53,17 @@ class ExcludeUrlFilter:
         if patterns is None:
             return []
         if isinstance(patterns, str):
-            return [chunk.strip() for chunk in patterns.split(",") if chunk.strip()]
+            return [
+                chunk.strip() for chunk in patterns.split(",") if chunk.strip()
+            ]
         return [str(chunk).strip() for chunk in patterns if str(chunk).strip()]
 
     def is_excluded(self, url: str) -> bool:
         """Return ``True`` if *url* matches any configured exclusion pattern.
 
         :param url: The absolute or relative URL to test.
-        :returns: Whether the URL should be skipped for tracing.
+        :returns: Whether the URL should be skipped for instrumentation.
         """
         if self._regex is None:
             return False
         return self._regex.search(url) is not None
-
-
-__all__ = ["ExcludeUrlFilter", "ExcludeUrlsInput"]
