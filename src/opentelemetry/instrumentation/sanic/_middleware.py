@@ -1,12 +1,12 @@
-"""The span lifecycle, expressed as Sanic middleware.
+"""The request lifecycle, expressed as Sanic middleware.
 
 This module owns exactly one responsibility: turning the request/response
-lifecycle of a single Sanic application into OpenTelemetry spans. It knows
-nothing about *how* it gets attached to an app (that is the instrumentor's
-job), which keeps the two concerns loosely coupled and independently testable.
+lifecycle of a single Sanic application into OpenTelemetry signals — a server
+span and, when a metrics recorder is supplied, the HTTP server metrics. It
+knows nothing about *how* it gets attached to an app (that is the
+instrumentor's job) nor which instruments exist (that is the recorder's job),
+which keeps the concerns loosely coupled and independently testable.
 """
-
-from __future__ import annotations
 
 import logging
 from typing import Any
@@ -25,6 +25,7 @@ from ._attributes import (
     span_name_for,
     status_code_to_status,
 )
+from ._metrics import RequestMeasurement, SanicMetricsRecorder
 from ._url_filter import ExcludeUrlFilter, ExcludeUrlsInput
 from .exceptions import MiddlewareRegistrationError, RequestAttributeError
 
@@ -32,9 +33,10 @@ __all__ = ["SanicOpenTelemetryMiddleware"]
 
 _logger = logging.getLogger(__name__)
 
-# Keys under which per-request tracing state is stashed on ``request.ctx``.
+# Keys under which per-request tracing/metric state is stashed on ``request.ctx``.
 _CTX_SPAN = "_otel_span"
 _CTX_TOKEN = "_otel_context_token"
+_CTX_MEASUREMENT = "_otel_metric"
 
 
 class SanicOpenTelemetryMiddleware:
@@ -45,12 +47,22 @@ class SanicOpenTelemetryMiddleware:
     can safely serve many concurrent requests and many applications.
 
     :param tracer: The :class:`~opentelemetry.trace.Tracer` used to create spans.
+    :param recorder: Optional
+        :class:`~opentelemetry.instrumentation.sanic._metrics.SanicMetricsRecorder`;
+        when ``None`` no metrics are emitted (spans only).
     :param excluded_urls: Optional URL patterns to skip; see
         :class:`~opentelemetry.instrumentation.sanic._url_filter.ExcludeUrlFilter`.
+        Excluded URLs produce neither spans nor metrics.
     """
 
-    def __init__(self, tracer: Tracer, excluded_urls: ExcludeUrlsInput = None) -> None:
+    def __init__(
+        self,
+        tracer: Tracer,
+        recorder: SanicMetricsRecorder | None = None,
+        excluded_urls: ExcludeUrlsInput = None,
+    ) -> None:
         self._tracer = tracer
+        self._recorder = recorder
         self._excluded_urls = ExcludeUrlFilter(excluded_urls)
 
     def attach(self, app: Any) -> None:
@@ -77,7 +89,7 @@ class SanicOpenTelemetryMiddleware:
     # -- Sanic middleware callbacks ------------------------------------------
 
     def on_request(self, request: Any) -> None:
-        """Start a server span and make it the current context.
+        """Start a server span, make it current, and mark the request in-flight.
 
         Registered as a Sanic ``request`` middleware. Any failure is logged and
         swallowed so that instrumentation never breaks the request pipeline.
@@ -96,7 +108,14 @@ class SanicOpenTelemetryMiddleware:
                 attributes=collect_request_attributes(request),
             )
             token = otel_context.attach(trace.set_span_in_context(span))
-            self._store(request, span, token)
+            # Recorder calls are internally guarded, so the span/token are
+            # always stored and will be finalised in on_response.
+            measurement = (
+                self._recorder.on_request(request)
+                if self._recorder is not None
+                else None
+            )
+            self._store(request, span, token, measurement)
         except RequestAttributeError:
             _logger.debug("Skipping tracing: unrecognised request object.")
         except Exception:
@@ -111,7 +130,7 @@ class SanicOpenTelemetryMiddleware:
         :param request: The Sanic request the response belongs to.
         :param response: The outgoing Sanic response.
         """
-        span, token = self._retrieve(request)
+        span, token, measurement = self._retrieve(request)
         if span is None:
             return
         try:
@@ -125,20 +144,34 @@ class SanicOpenTelemetryMiddleware:
             span.end()
             if token is not None:
                 otel_context.detach(token)
+            if self._recorder is not None:
+                self._recorder.on_response(request, response, measurement)
 
     # -- per-request state helpers -------------------------------------------
 
     @staticmethod
-    def _store(request: Any, span: Span, token: object) -> None:
+    def _store(
+        request: Any,
+        span: Span,
+        token: object,
+        measurement: RequestMeasurement | None,
+    ) -> None:
         ctx = getattr(request, "ctx", None)
         if ctx is None:  # pragma: no cover - defensive; real requests have ctx
             return
         setattr(ctx, _CTX_SPAN, span)
         setattr(ctx, _CTX_TOKEN, token)
+        setattr(ctx, _CTX_MEASUREMENT, measurement)
 
     @staticmethod
-    def _retrieve(request: Any) -> tuple[Span | None, object | None]:
+    def _retrieve(
+        request: Any,
+    ) -> tuple[Span | None, object | None, RequestMeasurement | None]:
         ctx = getattr(request, "ctx", None)
         if ctx is None:
-            return None, None
-        return getattr(ctx, _CTX_SPAN, None), getattr(ctx, _CTX_TOKEN, None)
+            return None, None, None
+        return (
+            getattr(ctx, _CTX_SPAN, None),
+            getattr(ctx, _CTX_TOKEN, None),
+            getattr(ctx, _CTX_MEASUREMENT, None),
+        )

@@ -4,7 +4,6 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opentelemetry-instrumentation-sanic"
-# Version is derived from the latest git tag by hatch-vcs; see [tool.hatch.version].
 dynamic = ["version"]
 description = "Zero-code OpenTelemetry instrumentation for the Sanic web framework"
 readme = "README.md"
@@ -30,6 +29,7 @@ classifiers = [
 # API 1.26 / semantic-conventions 0.47b0).
 dependencies = [
     "opentelemetry-api >= 1.26.0",
+    "opentelemetry-sdk >= 1.26.0",
     "opentelemetry-instrumentation >= 0.47b0",
     "opentelemetry-semantic-conventions >= 0.47b0",
 ]
@@ -39,10 +39,7 @@ instruments = ["sanic >= 20.12.0"]
 test = [
     "pytest >= 7.0",
     "pytest-asyncio >= 0.21",
-    # sanic-testing's ASGI client must match the sanic release line.
-    "sanic == 24.6.0",
-    "sanic-testing == 24.6.0",
-    "opentelemetry-sdk >= 1.26.0",
+    "sanic[test]",
 ]
 dev = [
     "ruff >= 0.6",
@@ -56,14 +53,10 @@ dev = [
 [project.entry-points.opentelemetry_instrumentor]
 sanic = "opentelemetry.instrumentation.sanic:SanicInstrumentor"
 
-# --------------------------------------------------------------------------- #
-# Build backend: version from VCS (git tags)                                  #
-# --------------------------------------------------------------------------- #
 [tool.hatch.version]
 source = "vcs"
 
 [tool.hatch.build.hooks.vcs]
-# Writes the resolved version to a file so it is importable from a source tree.
 version-file = "src/opentelemetry/instrumentation/sanic/_version.py"
 
 [tool.hatch.build.targets.wheel]
@@ -72,22 +65,18 @@ packages = ["src/opentelemetry"]
 [tool.hatch.build.targets.sdist]
 include = ["src", "tests", "examples", "README.md", "pyproject.toml"]
 
-# --------------------------------------------------------------------------- #
-# Test / lint tooling                                                         #
-# --------------------------------------------------------------------------- #
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.ruff]
-line-length = 88
+line-length = 79
 target-version = "py310"
 src = ["src", "tests", "examples"]
 extend-exclude = ["_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "BLE", "RUF"]
-# Line length is enforced by the formatter; long docstrings/comments are exempt.
 ignore = ["E501"]
 
 [tool.ruff.lint.isort]

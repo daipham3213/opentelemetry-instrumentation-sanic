@@ -15,10 +15,14 @@ from __future__ import annotations
 from typing import Any
 
 from opentelemetry.semconv.attributes.client_attributes import CLIENT_ADDRESS
+from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.http_attributes import (
     HTTP_REQUEST_METHOD,
     HTTP_RESPONSE_STATUS_CODE,
     HTTP_ROUTE,
+)
+from opentelemetry.semconv.attributes.network_attributes import (
+    NETWORK_PROTOCOL_VERSION,
 )
 from opentelemetry.semconv.attributes.server_attributes import (
     SERVER_ADDRESS,
@@ -41,7 +45,11 @@ from .exceptions import RequestAttributeError
 __all__ = [
     "HTTP_RESPONSE_STATUS_CODE",
     "SERVER_SPAN_KIND",
+    "active_request_attributes",
+    "collect_metric_attributes",
     "collect_request_attributes",
+    "request_body_size",
+    "response_body_size",
     "span_name_for",
     "status_code_to_status",
 ]
@@ -67,7 +75,9 @@ def span_name_for(request: Any) -> str:
         raise RequestAttributeError(
             "Object passed to span_name_for is not a Sanic request (missing 'method')."
         )
-    route = getattr(request, "uri_template", None) or getattr(request, "path", None)
+    route = getattr(request, "uri_template", None) or getattr(
+        request, "path", None
+    )
     return f"{method} {route}" if route else str(method)
 
 
@@ -109,7 +119,11 @@ def collect_request_attributes(request: Any) -> dict[str, Any]:
     if user_agent is not None:
         candidates[USER_AGENT_ORIGINAL] = user_agent
 
-    return {key: value for key, value in candidates.items() if value not in (None, "")}
+    return {
+        key: value
+        for key, value in candidates.items()
+        if value not in (None, "")
+    }
 
 
 def status_code_to_status(status_code: int) -> StatusCode:
@@ -124,6 +138,95 @@ def status_code_to_status(status_code: int) -> StatusCode:
     if status_code < 100 or status_code >= 500:
         return StatusCode.ERROR
     return StatusCode.UNSET
+
+
+def active_request_attributes(request: Any) -> dict[str, Any]:
+    """Low-cardinality attributes for the active-requests up-down counter.
+
+    ``http.server.active_requests`` is incremented on request *start* and
+    decremented on request *end*, so its attributes must be knowable at start
+    time and identical across the pair — otherwise the counter never returns to
+    zero. Per the HTTP metric conventions that means the request method and URL
+    scheme only.
+
+    :param request: A Sanic ``Request`` instance.
+    :returns: A mapping of stable semantic-convention keys to values.
+    """
+    candidates = (
+        (HTTP_REQUEST_METHOD, getattr(request, "method", None)),
+        (URL_SCHEME, getattr(request, "scheme", None)),
+    )
+    return {key: value for key, value in candidates if value not in (None, "")}
+
+
+def collect_metric_attributes(
+    request: Any, status_code: int | None
+) -> dict[str, Any]:
+    """Attributes for the request-duration and body-size histograms.
+
+    Extends :func:`active_request_attributes` with the response-dependent
+    dimensions: the matched route, negotiated protocol version, response status
+    code, and — for server errors — ``error.type`` (mirroring the span status
+    mapping in :func:`status_code_to_status`).
+
+    :param request: A Sanic ``Request`` instance.
+    :param status_code: The numeric response status, or ``None`` if unknown.
+    :returns: A mapping of stable semantic-convention keys to values.
+    """
+    attributes = active_request_attributes(request)
+
+    route = getattr(request, "uri_template", None)
+    if route:
+        attributes[HTTP_ROUTE] = route
+
+    version = getattr(request, "version", None)
+    if version:
+        attributes[NETWORK_PROTOCOL_VERSION] = str(version)
+
+    if isinstance(status_code, int):
+        attributes[HTTP_RESPONSE_STATUS_CODE] = status_code
+        if status_code_to_status(status_code) is StatusCode.ERROR:
+            attributes[ERROR_TYPE] = str(status_code)
+
+    return attributes
+
+
+def request_body_size(request: Any) -> int | None:
+    """Best-effort size in bytes of the request payload body.
+
+    Prefers the ``Content-Length`` header (correct and cheap for the common
+    case) and falls back to the length of any buffered body. Returns ``None``
+    when the size is unknown or zero, so bodyless requests are not recorded.
+
+    :param request: A Sanic ``Request`` instance.
+    :returns: The body size in bytes, or ``None``.
+    """
+    content_length = _header(request, "content-length")
+    if content_length is not None:
+        try:
+            return int(content_length) or None
+        except ValueError:
+            return None
+    body = getattr(request, "body", None) or b""
+    try:
+        return len(body) or None
+    except TypeError:  # pragma: no cover - non-sized body object
+        return None
+
+
+def response_body_size(response: Any) -> int | None:
+    """Best-effort size in bytes of the response payload body.
+
+    :param response: A Sanic response instance.
+    :returns: The body size in bytes, or ``None`` when empty/unknown.
+    """
+    body = getattr(response, "body", None)
+    if not body:
+        return None
+    try:
+        return len(body)
+    except TypeError:  # pragma: no cover - non-sized body object
+        return None
 
 
 def _server_address_and_port(request: Any) -> tuple[str | None, int | None]:

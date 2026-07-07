@@ -26,7 +26,9 @@ How it works
 ------------
 Instead of patching version-sensitive internals such as ``handle_request``,
 the instrumentor wraps :meth:`sanic.Sanic.__init__` so that every application
-attaches OpenTelemetry request/response middleware as it is constructed.
+attaches OpenTelemetry request/response middleware as it is constructed. That
+middleware emits both a server span and the standard HTTP server metrics
+(request duration, active requests, and request/response body sizes).
 Middleware signatures are stable across Sanic releases, which keeps the
 integration loosely coupled to Sanic's internals.
 
@@ -46,8 +48,10 @@ from functools import wraps
 from typing import Any
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+from opentelemetry.metrics import get_meter
 from opentelemetry.trace import get_tracer
 
+from ._metrics import SanicMetricsRecorder
 from ._middleware import SanicOpenTelemetryMiddleware
 from ._url_filter import ExcludeUrlsInput
 from .exceptions import (
@@ -105,6 +109,7 @@ class SanicInstrumentor(BaseInstrumentor):
 
         SanicInstrumentor().instrument(
             tracer_provider=my_provider,
+            meter_provider=my_meter_provider,
             excluded_urls="/health,/metrics",
         )
         ...
@@ -113,8 +118,12 @@ class SanicInstrumentor(BaseInstrumentor):
     :keyword tracer_provider: An optional
         :class:`~opentelemetry.trace.TracerProvider`; the global provider is
         used when omitted.
+    :keyword meter_provider: An optional
+        :class:`~opentelemetry.metrics.MeterProvider`; the global provider is
+        used when omitted.
     :keyword excluded_urls: Optional comma-separated string or iterable of
-        regular-expression patterns; matching request URLs are not traced.
+        regular-expression patterns; matching request URLs are neither traced
+        nor measured.
     """
 
     def __init__(self) -> None:
@@ -133,6 +142,7 @@ class SanicInstrumentor(BaseInstrumentor):
         """Activate instrumentation by wrapping :meth:`sanic.Sanic.__init__`.
 
         :keyword tracer_provider: Optional tracer provider (see class docstring).
+        :keyword meter_provider: Optional meter provider (see class docstring).
         :keyword excluded_urls: Optional URL exclusion patterns.
         :raises SanicInstrumentationError: If Sanic cannot be imported.
         """
@@ -152,11 +162,21 @@ class SanicInstrumentor(BaseInstrumentor):
             __version__,
             tracer_provider=kwargs.get("tracer_provider"),
         )
+        meter = get_meter(
+            __name__,
+            __version__,
+            meter_provider=kwargs.get("meter_provider"),
+        )
+        recorder = SanicMetricsRecorder(meter)
         excluded_urls: ExcludeUrlsInput = kwargs.get("excluded_urls")
-        middleware = SanicOpenTelemetryMiddleware(tracer, excluded_urls)
+        middleware = SanicOpenTelemetryMiddleware(
+            tracer, recorder, excluded_urls
+        )
 
         self._original_init = sanic.Sanic.__init__
-        sanic.Sanic.__init__ = _build_instrumented_init(self._original_init, middleware)
+        sanic.Sanic.__init__ = _build_instrumented_init(
+            self._original_init, middleware
+        )
 
     def _uninstrument(self, **kwargs: Any) -> None:
         """Restore the original :meth:`sanic.Sanic.__init__`.
@@ -171,6 +191,8 @@ class SanicInstrumentor(BaseInstrumentor):
 
             sanic.Sanic.__init__ = self._original_init
         except ImportError:  # pragma: no cover - dependency guard
-            _logger.debug("Sanic not importable during uninstrument; skipping.")
+            _logger.debug(
+                "Sanic not importable during uninstrument; skipping."
+            )
         finally:
             self._original_init = None
