@@ -12,7 +12,11 @@ from opentelemetry.semconv.attributes.http_attributes import (
     HTTP_REQUEST_METHOD,
     HTTP_RESPONSE_STATUS_CODE,
 )
-from opentelemetry.trace import SpanKind
+from opentelemetry.trace import (
+    SpanKind,
+    format_span_id,
+    format_trace_id,
+)
 from opentelemetry.trace.status import StatusCode
 
 from opentelemetry.instrumentation.sanic._span import SpanRecorder
@@ -41,6 +45,38 @@ def test_start_then_finish_exports_one_server_span(
     assert span.attributes[HTTP_REQUEST_METHOD] == "GET"
     assert span.attributes[HTTP_RESPONSE_STATUS_CODE] == 200
     assert span.status.status_code is StatusCode.UNSET
+
+
+def test_finish_sets_x_trace_id_response_header(
+    span_exporter, tracer, make_request, make_response
+) -> None:
+    recorder = SpanRecorder(tracer)
+    response = make_response(status=200)
+
+    active = recorder.start(make_request())
+    recorder.finish(active, response)
+
+    span = span_exporter.get_finished_spans()[0]
+    expected_trace_id = format_trace_id(span.context.trace_id)
+    assert response.headers["X-Trace-Id"] == expected_trace_id
+
+
+def test_finish_injects_configured_propagator_headers(
+    span_exporter, tracer, make_request, make_response
+) -> None:
+    recorder = SpanRecorder(tracer)
+    response = make_response(status=200)
+
+    active = recorder.start(make_request())
+    recorder.finish(active, response)
+
+    span = span_exporter.get_finished_spans()[0]
+    trace_id = format_trace_id(span.context.trace_id)
+    span_id = format_span_id(span.context.span_id)
+    flags = format(span.context.trace_flags, "02x")
+    assert response.headers["traceparent"] == (
+        f"00-{trace_id}-{span_id}-{flags}"
+    )
 
 
 def test_finish_marks_server_error(

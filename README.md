@@ -53,6 +53,7 @@ from opentelemetry.instrumentation.sanic import SanicInstrumentor
 SanicInstrumentor().instrument(excluded_urls="/health,/metrics")
 
 from sanic import Sanic
+
 app = Sanic("my-app")
 ```
 

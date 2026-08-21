@@ -111,7 +111,7 @@ def make_response() -> Callable[..., SimpleNamespace]:
     """Return a factory building duck-typed Sanic-response stand-ins."""
 
     def _make(**overrides: Any) -> SimpleNamespace:
-        data: dict[str, Any] = {"status": 200, "body": b""}
+        data: dict[str, Any] = {"status": 200, "body": b"", "headers": {}}
         data.update(overrides)
         return SimpleNamespace(**data)
 

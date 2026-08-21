@@ -149,3 +149,13 @@ def test_response_status_only_returns_ints() -> None:
     assert _request.response_status(SimpleNamespace(status=204)) == 204
     assert _request.response_status(SimpleNamespace(status="204")) is None
     assert _request.response_status(object()) is None
+
+
+def test_set_response_header_writes_into_headers_mapping() -> None:
+    response = SimpleNamespace(headers={})
+    _request.set_response_header(response, "X-Trace-Id", "abc123")
+    assert response.headers == {"X-Trace-Id": "abc123"}
+
+
+def test_set_response_header_without_headers_is_a_noop() -> None:
+    _request.set_response_header(object(), "X-Trace-Id", "abc123")  # no raise
