@@ -32,6 +32,7 @@ __all__ = [
     "route",
     "scheme",
     "server_address_and_port",
+    "set_response_header",
     "url",
     "user_agent",
 ]
@@ -169,3 +170,15 @@ def response_status(response: Any) -> int | None:
     """
     status = getattr(response, "status", None)
     return status if isinstance(status, int) else None
+
+
+def set_response_header(response: Any, name: str, value: str) -> None:
+    """Set a header on the outgoing response, if it exposes a headers mapping.
+
+    :param response: The Sanic response.
+    :param name: The header name to set.
+    :param value: The header value.
+    """
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        headers[name] = value

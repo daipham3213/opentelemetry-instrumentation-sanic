@@ -12,11 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from opentelemetry.propagate import extract
+from opentelemetry.propagate import extract, inject
+from opentelemetry.propagators.textmap import Setter
 from opentelemetry.semconv.attributes.http_attributes import (
     HTTP_RESPONSE_STATUS_CODE,
 )
-from opentelemetry.trace import Span, Tracer
+from opentelemetry.trace import Span, Tracer, format_trace_id
 from opentelemetry.trace.status import Status
 
 from opentelemetry import context as otel_context
@@ -31,6 +32,23 @@ from ._span_attributes import (
 )
 
 __all__ = ["ActiveSpan", "SpanRecorder"]
+
+X_TRACE_ID = "X-Trace-Id"
+
+
+class _ResponseHeaderSetter(Setter[Any]):
+    """Adapts :func:`._request.set_response_header` to the propagator API.
+
+    Lets :func:`opentelemetry.propagate.inject` write directly onto a Sanic
+    response through the same defensive header setter the rest of this
+    package uses, instead of assuming the carrier is a plain ``dict``.
+    """
+
+    def set(self, carrier: Any, key: str, value: str) -> None:
+        _request.set_response_header(carrier, key, value)
+
+
+_RESPONSE_HEADER_SETTER = _ResponseHeaderSetter()
 
 
 @dataclass(slots=True)
@@ -80,10 +98,13 @@ class SpanRecorder:
         return ActiveSpan(span, token)
 
     def finish(self, active: ActiveSpan | None, response: Any) -> None:
-        """Finalise the span started by :meth:`start`.
+        """Finalize the span started by :meth:`start`.
 
-        Records the response status, then always ends the span and detaches its
-        context — even if reading the response status fails.
+        Sets the ``X-Trace-Id`` response header plus whatever headers the
+        globally configured propagator defines (by default ``traceparent``,
+        ``tracestate``, and ``baggage``), records the response status, then
+        always ends the span and detaches its context — even if reading the
+        response status fails.
 
         :param active: The handle returned by the paired :meth:`start`, or
             ``None`` to skip (no span was started).
@@ -93,6 +114,18 @@ class SpanRecorder:
             return
         span = active.span
         try:
+            span_context = span.get_span_context()
+            if span_context.is_valid:
+                _request.set_response_header(
+                    response,
+                    X_TRACE_ID,
+                    format_trace_id(span_context.trace_id),
+                )
+                inject(
+                    response,
+                    context=trace.set_span_in_context(span),
+                    setter=_RESPONSE_HEADER_SETTER,
+                )
             status_code = _request.response_status(response)
             if status_code is not None and span.is_recording():
                 span.set_attribute(HTTP_RESPONSE_STATUS_CODE, status_code)
